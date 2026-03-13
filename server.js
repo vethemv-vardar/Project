@@ -4,6 +4,12 @@ const cors    = require('cors');
 const jwt     = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 
+// Railway'de crash olmasın: env kontrolü
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  console.error('HATA: SUPABASE_URL ve SUPABASE_SERVICE_KEY tanımlı olmalı. Railway > Variables ekle.');
+  process.exit(1);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -84,29 +90,19 @@ app.post('/auth/admin', (req, res) => {
   res.json({ token, role: 'admin', name: 'Admin' });
 });
 
-// Öğrenci girişi — kullanıcı adı + aylık 4 haneli kod
+// Öğrenci girişi — sadece aylık 4 haneli kod (anonim)
 app.post('/auth/student', async (req, res) => {
-  const { username, monthly_code } = req.body;
-  if (!username || !monthly_code) {
-    return res.status(400).json({ error: 'Kullanıcı adı ve aylık kod gerekli' });
+  const { monthly_code } = req.body;
+  if (!monthly_code) {
+    return res.status(400).json({ error: 'Aylık kod gerekli' });
   }
 
-  // Öğrenciyi bul
-  const { data: student, error } = await supabase
-    .from('students')
-    .select('*')
-    .eq('username', username.trim().toLowerCase())
-    .single();
+  const mk     = getCurrentMonthKey();
+  const prevMk = getPrevMonthKey();
 
-  if (error || !student) {
-    return res.status(401).json({ error: 'Kullanıcı bulunamadı' });
-  }
-
-  // Aylık kodu kontrol et (bu ay veya geçen ay geçerli)
-  const mk       = getCurrentMonthKey();
-  const prevMk   = getPrevMonthKey();
-  const validNow  = generateMonthlyCode(student.group_name, mk);
-  const validPrev = generateMonthlyCode(student.group_name, prevMk);
+  // Tüm öğrenciler için B grubu kabul ediliyor (anonim)
+  const validNow  = generateMonthlyCode('B', mk);
+  const validPrev = generateMonthlyCode('B', prevMk);
   const entered   = String(monthly_code).trim();
 
   if (entered !== validNow && entered !== validPrev) {
@@ -114,20 +110,15 @@ app.post('/auth/student', async (req, res) => {
   }
 
   const token = jwt.sign(
-    { role: 'student', id: student.id, name: student.name, group: student.group_name },
+    { role: 'student', group: 'B' },
     JWT_SECRET,
     { expiresIn: '35d' }
   );
 
   res.json({
     token,
-    role: 'student',
-    id:   student.id,
-    name: student.name,
-    tc:   student.tc,
-    group: student.group_name,
-    lessonsCompleted: student.lessons_completed,
-    totalLessons:     student.total_lessons,
+    role:  'student',
+    group: 'B',
   });
 });
 
@@ -264,44 +255,51 @@ app.get('/lessons', auth, async (req, res) => {
 //  PUANLAMA
 // ═══════════════════════════════════════════════════════════
 
-// Hoca puan ver (ayda 1 kez)
-app.post('/ratings', auth, async (req, res) => {
-  if (req.user.role !== 'student') return res.status(403).json({ error: 'Sadece öğrenciler puan verebilir' });
+// Hoca puan ver (cihaz başına, ayda 1 kez, anonim)
+app.post('/ratings', async (req, res) => {
+  const { instructor_id, star, comment, device_token } = req.body;
 
-  const { instructor_id, star, comment } = req.body;
-  if (!instructor_id || !star) return res.status(400).json({ error: 'Eksik bilgi' });
-  if (star < 1 || star > 5)   return res.status(400).json({ error: 'Puan 1-5 arasında olmalı' });
+  if (!instructor_id || !star) {
+    return res.status(400).json({ error: 'Eksik bilgi' });
+  }
+  if (!device_token) {
+    return res.status(400).json({ error: 'Cihaz kimliği (device_token) gerekli' });
+  }
+  if (star < 1 || star > 5) {
+    return res.status(400).json({ error: 'Puan 1-5 arasında olmalı' });
+  }
 
   const mk = getCurrentMonthKey();
 
+  // Bu cihaz bu hocayı bu ay zaten oylamış mı?
+  const { data: existing, error: findErr } = await supabase
+    .from('ratings')
+    .select('id')
+    .eq('instructor_id', instructor_id)
+    .eq('month_key', mk)
+    .eq('device_token', device_token)
+    .maybeSingle();
+
+  if (findErr) {
+    return res.status(500).json({ error: findErr.message });
+  }
+  if (existing) {
+    return res.status(409).json({ error: 'Bu ay bu hocayı zaten oyladınız' });
+  }
+
   const { data, error } = await supabase.from('ratings').insert({
-    student_id:    req.user.id,
+    student_id:    null,
     instructor_id: parseInt(instructor_id),
     month_key:     mk,
     star:          parseInt(star),
     comment:       comment || '',
+    device_token,
   }).select().single();
 
   if (error) {
-    // Unique constraint = zaten oylamış
-    if (error.code === '23505') {
-      return res.status(409).json({ error: 'Bu ay zaten bu hocayı oyladınız' });
-    }
     return res.status(500).json({ error: error.message });
   }
 
-  res.json(data);
-});
-
-// Benim puanlarım
-app.get('/ratings/mine', auth, async (req, res) => {
-  if (req.user.role !== 'student') return res.status(403).json({ error: 'Yetkisiz' });
-  const { data, error } = await supabase
-    .from('ratings')
-    .select('*')
-    .eq('student_id', req.user.id)
-    .order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 

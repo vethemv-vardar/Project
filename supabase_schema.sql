@@ -3,7 +3,6 @@
 -- Supabase > SQL Editor > New Query > Buraya yapıştır > Run
 -- =====================================================
 
--- Öğrenciler tablosu
 CREATE TABLE IF NOT EXISTS students (
   id                  SERIAL PRIMARY KEY,
   username            TEXT UNIQUE NOT NULL,
@@ -15,6 +14,17 @@ CREATE TABLE IF NOT EXISTS students (
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Hocalar
+CREATE TABLE IF NOT EXISTS instructors (
+  id         SERIAL PRIMARY KEY,
+  name       TEXT NOT NULL,
+  title      TEXT,
+  phone      TEXT,
+  emoji      TEXT DEFAULT '👨',
+  exp        TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Hoca puanlamaları
 CREATE TABLE IF NOT EXISTS ratings (
   id            SERIAL PRIMARY KEY,
@@ -23,6 +33,7 @@ CREATE TABLE IF NOT EXISTS ratings (
   month_key     TEXT NOT NULL,   -- örn: "2025-03"
   star          INT NOT NULL CHECK (star BETWEEN 1 AND 5),
   comment       TEXT DEFAULT '',
+  device_token  TEXT,
   created_at    TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(student_id, instructor_id, month_key)  -- ayda 1 oy
 );
